@@ -14,7 +14,7 @@ import Foundation
 /// This class forwards all delegate methods supported pre iOS15/macOS 12 to both the underlying session delegate and any assigned task delegates, consisting of the majority of the backporting work.
 class SessionDelegateProxy: NSObject {
     var originalDelegate: URLSessionDelegate?
-    var taskMap: [Int : TaskDelegateHandler] = [:]
+    var taskMap: [Int: TaskDelegateHandler] = [:]
     
     init(originalDelegate: URLSessionDelegate?) {
         self.originalDelegate = originalDelegate
@@ -24,9 +24,18 @@ class SessionDelegateProxy: NSObject {
     /// - Parameters:
     ///   - task: The task to add.
     ///   - delegate: The delegate for the task.
-    func addTaskDelegate(task: URLSessionTask, delegate: URLSessionTaskDelegate?, dataAccumulator: DataAccumulator? = nil, onResponse: ((URLSessionDataTask, DataAccumulator, Result<URLResponse, Error>) -> Void)? = nil) {
-        dataAccumulator?.onResponse = onResponse
-        taskMap[task.taskIdentifier] = TaskDelegateHandler(task: task, delegate: delegate, dataAccumulator: dataAccumulator)
+    func addTaskDelegate(
+        task: URLSessionTask,
+        delegate: URLSessionTaskDelegate?,
+        dataStream: AsyncThrowingStream<UInt8, Swift.Error>.Continuation? = nil,
+        response: ((Result<URLResponse, Error>) -> Void)? = nil
+    ) {
+        taskMap[task.taskIdentifier] = TaskDelegateHandler(
+            task: task,
+            delegate: delegate,
+            dataStream: dataStream,
+            response: response
+        )
     }
     
     /// Remove a task delegate when the task is finished.
@@ -130,16 +139,12 @@ extension SessionDelegateProxy: URLSessionTaskDelegate {
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let taskDelegate = taskMap[task.taskIdentifier]
-        if let accumulator = taskDelegate?.dataAccumulator {
-            if let error = error {
-                // An accumulator will only be set for data tasks, so we can assume this is the case if one is available.
-                accumulator.onResponse?(task as! URLSessionDataTask, accumulator, .failure(error))
-                taskDelegate?.dataAccumulator?.result = .failure(error)
-            } else {
-                taskDelegate?.dataAccumulator?.result = .success(())
-            }
-            
-            accumulator.onResponse = nil
+        
+        if let error = error {
+            taskDelegate?.dataStream?.finish(throwing: error)
+            taskDelegate?.response?(.failure(error))
+        } else {
+            taskDelegate?.dataStream?.finish()
         }
         
         taskDelegate?.delegate?.urlSession?(session, task: task, didCompleteWithError: error)
@@ -158,9 +163,8 @@ extension SessionDelegateProxy: URLSessionDataDelegate {
         
         func verifyDisposition(_ disposition: URLSession.ResponseDisposition) {
             // If we have an accumulator, we are interested in the results of the disposition!
-            if case .allow = disposition, let accumulator = taskDelegate?.dataAccumulator {
-                accumulator.onResponse?(dataTask, accumulator, .success(response))
-                accumulator.onResponse = nil
+            if case .allow = disposition {
+                taskDelegate?.response?(.success(response))
             }
             completionHandler(disposition)
         }
@@ -189,7 +193,11 @@ extension SessionDelegateProxy: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         // Note from AsyncBytes documentation: "Delegate will not be called for response and data delivery."
         let taskDelegate = taskMap[dataTask.taskIdentifier]
-        taskDelegate?.dataAccumulator?.addBuffer(data)
+        
+        data.forEach { byte in
+            taskDelegate?.dataStream?.yield(byte)
+        }
+        
         taskDelegate?.dataDelegate?.urlSession?(session, dataTask: dataTask, didReceive: data)
         originalDataDelegate?.urlSession?(session, dataTask: dataTask, didReceive: data)
     }

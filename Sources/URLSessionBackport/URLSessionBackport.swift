@@ -56,6 +56,7 @@ extension URLSession {
 #if compiler(>=5.5.2)
 extension UnsafeContinuation {
     /// A generic completion handler for URLSession-based tasks
+    @Sendable
     func taskCompletionHandler<A, B>(_ a: A?, _ b: B?, _ error: E?) where T == (A, B) {
         switch (a, b, error) {
         case (.some(let a), .some(let b), .none):
@@ -236,16 +237,10 @@ extension URLSession.Backport {
                     return
                 }
                 
-                let accumulator = DataAccumulator()
-                
-                sessionDelegate.addTaskDelegate(task: task, delegate: delegate, dataAccumulator: accumulator) { task, accumulator, results in
-                    switch results {
-                    case .success(let response):
-                        continuation.resume(returning: (AsyncBytes(task: task, dataAccumulator: accumulator), response))
-                    case .failure(let error):
-                        continuation.resume(throwing: error)
+                AsyncBytesResponse(task: task, taskDelegate: sessionDelegate, delegate: delegate)
+                    .bytes { bytes, response in
+                        continuation.resume(returning: (bytes, response))
                     }
-                }
                 
                 task.resume()
             }
@@ -270,16 +265,10 @@ extension URLSession.Backport {
                     return
                 }
                 
-                let accumulator = DataAccumulator()
-                
-                sessionDelegate.addTaskDelegate(task: task, delegate: delegate, dataAccumulator: accumulator) { task, accumulator, results in
-                    switch results {
-                    case .success(let response):
-                        continuation.resume(returning: (AsyncBytes(task: task, dataAccumulator: accumulator), response))
-                    case .failure(let error):
-                        continuation.resume(throwing: error)
+                AsyncBytesResponse(task: task, taskDelegate: sessionDelegate, delegate: delegate)
+                    .bytes { bytes, response in
+                        continuation.resume(returning: (bytes, response))
                     }
-                }
                 
                 task.resume()
             }

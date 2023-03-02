@@ -17,6 +17,7 @@ protocol BytesProvider {
 
 @available(macOS 12.0, iOS 15.0, watchOS 8.0, *)
 extension URLSession.AsyncBytes.Iterator: BytesProvider {}
+extension AsyncThrowingStream.Iterator: BytesProvider where Element == UInt8 {}
 
 extension URLSession.Backport {
     
@@ -27,18 +28,18 @@ extension URLSession.Backport {
         public typealias AsyncIterator = Iterator
         
         /// Underlying data task providing the bytes.
-        internal(set) public var task: URLSessionDataTask
+        let task: URLSessionDataTask
         
         /// A type erased provider of bytes, so this type can wrap either ``DataAccumulator`` or ``URLSession.AsyncBytes.Iterator``.
         var bytesProvider: BytesProvider
         
-        /// Initialize ``AsyncBytes`` with a ``URLSessionDataTask`` and ``DataAccumulator``. This path is taken by the backported methods.
+        /// Initialize ``AsyncBytes`` with a ``URLSessionDataTask`` and ``AsyncBytesResponse``. This path is taken by the backported methods.
         /// - Parameters:
         ///   - task: The URL task for reference.
-        ///   - dataAccumulator: The data accumulator that consumes data from the URLSession's delegate.
-        init(task: URLSessionDataTask, dataAccumulator: DataAccumulator) {
+        ///   - dataStream: The data accumulator that consumes data from the URLSession's delegate.
+        init(task: URLSessionDataTask, dataStream: AsyncThrowingStream<UInt8, Swift.Error>) {
             self.task = task
-            self.bytesProvider = dataAccumulator
+            self.bytesProvider = dataStream.makeAsyncIterator()
         }
         
         /// Initialize ``AsyncBytes`` with ``URLSession.AsyncBytes``. This path is taken on modern OSs.
