@@ -76,7 +76,7 @@ extension URLSession.Backport {
     ///   - task: The task to resume.
     ///   - delegate: The delegate to schedule, if provided.
     ///   - function: The calling function, for logging purposes.
-    func resume(_ task: URLSessionTask, with delegate: URLSessionTaskDelegate?, _ function: String = #function) {
+    public func resume(_ task: URLSessionTask, with delegate: URLSessionTaskDelegate?, _ function: String = #function) {
         if let delegate = delegate {
             if let sessionDelegate = session.delegate as? SessionDelegateProxy {
                 sessionDelegate.addTaskDelegate(task: task, delegate: delegate)
