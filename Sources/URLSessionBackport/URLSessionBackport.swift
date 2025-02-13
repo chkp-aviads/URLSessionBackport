@@ -42,8 +42,11 @@ extension URLSession {
     @available(macOS, introduced: 10.15, deprecated: 12.0, message: "This override is no longer necessary; you should remove `.backport` and use the built-in initializer instead.")
     @available(iOS, introduced: 13.0, deprecated: 15.0, message: "This override is no longer necessary; you should remove `.backport` and use the built-in initializer instead.")
     @available(watchOS, introduced: 6.0, deprecated: 8.0, message: "This override is no longer necessary; you should remove `.backport` and use the built-in initializer instead.")
-    public static func backport(configuration: URLSessionConfiguration, delegate: URLSessionDelegate? = nil, delegateQueue queue: OperationQueue? = nil) -> URLSession {
+    public static func backport(configuration: URLSessionConfiguration, delegate: URLSessionDelegate? = nil, delegateQueue queue: OperationQueue? = nil, force: Bool = false) -> URLSession {
         if #available(macOS 12.0, iOS 15.0, watchOS 8.0, *) {
+            if force {
+                return URLSession(configuration: configuration, delegate: SessionDelegateProxy(originalDelegate: delegate), delegateQueue: queue)
+            }
             return URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
         } else {
             return URLSession(configuration: configuration, delegate: SessionDelegateProxy(originalDelegate: delegate), delegateQueue: queue)
