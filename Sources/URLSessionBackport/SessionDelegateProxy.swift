@@ -13,8 +13,9 @@ import Foundation
 ///
 /// This class forwards all delegate methods supported pre iOS15/macOS 12 to both the underlying session delegate and any assigned task delegates, consisting of the majority of the backporting work.
 class SessionDelegateProxy: NSObject {
+    fileprivate let lock = DispatchQueue(label: "com.mochidev.URLSessionBackport.SessionDelegateProxy")
     var originalDelegate: URLSessionDelegate?
-    var taskMap: [Int: TaskDelegateHandler] = [:]
+    private var taskMap: [Int: TaskDelegateHandler] = [:]
     
     init(originalDelegate: URLSessionDelegate?) {
         self.originalDelegate = originalDelegate
@@ -30,18 +31,28 @@ class SessionDelegateProxy: NSObject {
         dataStream: AsyncThrowingStream<UInt8, Swift.Error>.Continuation? = nil,
         response: ((Result<URLResponse, Error>) -> Void)? = nil
     ) {
-        taskMap[task.taskIdentifier] = TaskDelegateHandler(
-            task: task,
-            delegate: delegate,
-            dataStream: dataStream,
-            response: response
-        )
+        lock.sync {
+            taskMap[task.taskIdentifier] = TaskDelegateHandler(
+                task: task,
+                delegate: delegate,
+                dataStream: dataStream,
+                response: response
+            )
+        }
     }
     
     /// Remove a task delegate when the task is finished.
     /// - Parameter task: the task to remove.
     func removeTaskDelegate(task: URLSessionTask) {
-        taskMap.removeValue(forKey: task.taskIdentifier)
+        lock.sync {
+            _ = taskMap.removeValue(forKey: task.taskIdentifier)
+        }
+    }
+    
+    func getTaskDelegate(task: URLSessionTask) -> TaskDelegateHandler? {
+        lock.sync {
+            taskMap[task.taskIdentifier]
+        }
     }
 }
 
@@ -85,7 +96,7 @@ extension SessionDelegateProxy: URLSessionTaskDelegate {
     var originalTaskDelegate: URLSessionTaskDelegate? { originalDelegate as? URLSessionTaskDelegate }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, willBeginDelayedRequest request: URLRequest, completionHandler: @escaping (URLSession.DelayedRequestDisposition, URLRequest?) -> Void) {
-        if let taskDelegateMethod = taskMap[task.taskIdentifier]?.delegate?.urlSession(_:task:willBeginDelayedRequest:completionHandler:) {
+        if let taskDelegateMethod = getTaskDelegate(task: task)?.delegate?.urlSession(_:task:willBeginDelayedRequest:completionHandler:) {
             taskDelegateMethod(session, task, request, completionHandler)
         } else if let delegateMethod = originalTaskDelegate?.urlSession(_:task:willBeginDelayedRequest:completionHandler:) {
             delegateMethod(session, task, request, completionHandler)
@@ -95,12 +106,12 @@ extension SessionDelegateProxy: URLSessionTaskDelegate {
     }
     
     func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
-        taskMap[task.taskIdentifier]?.delegate?.urlSession?(session, taskIsWaitingForConnectivity: task)
+        getTaskDelegate(task: task)?.delegate?.urlSession?(session, taskIsWaitingForConnectivity: task)
         originalTaskDelegate?.urlSession?(session, taskIsWaitingForConnectivity: task)
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        if let taskDelegateMethod = taskMap[task.taskIdentifier]?.delegate?.urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:) {
+        if let taskDelegateMethod = getTaskDelegate(task: task)?.delegate?.urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:) {
             taskDelegateMethod(session, task, response, request, completionHandler)
         } else if let delegateMethod = originalTaskDelegate?.urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:) {
             delegateMethod(session, task, response, request, completionHandler)
@@ -110,7 +121,7 @@ extension SessionDelegateProxy: URLSessionTaskDelegate {
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        if let taskDelegateMethod = taskMap[task.taskIdentifier]?.delegate?.urlSession(_:task:didReceive:completionHandler:) {
+        if let taskDelegateMethod = getTaskDelegate(task: task)?.delegate?.urlSession(_:task:didReceive:completionHandler:) {
             taskDelegateMethod(session, task, challenge, completionHandler)
         } else if let delegateMethod = originalTaskDelegate?.urlSession(_:task:didReceive:completionHandler:) {
             delegateMethod(session, task, challenge, completionHandler)
@@ -120,7 +131,7 @@ extension SessionDelegateProxy: URLSessionTaskDelegate {
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, needNewBodyStream completionHandler: @escaping (InputStream?) -> Void) {
-        if let taskDelegateMethod = taskMap[task.taskIdentifier]?.delegate?.urlSession(_:task:needNewBodyStream:) {
+        if let taskDelegateMethod = getTaskDelegate(task: task)?.delegate?.urlSession(_:task:needNewBodyStream:) {
             taskDelegateMethod(session, task, completionHandler)
         } else if let delegateMethod = originalTaskDelegate?.urlSession(_:task:needNewBodyStream:) {
             delegateMethod(session, task, completionHandler)
@@ -130,15 +141,17 @@ extension SessionDelegateProxy: URLSessionTaskDelegate {
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        taskMap[task.taskIdentifier]?.delegate?.urlSession?(session, task: task, didSendBodyData: bytesSent, totalBytesSent: totalBytesSent, totalBytesExpectedToSend: totalBytesExpectedToSend)
+        getTaskDelegate(task: task)?.delegate?.urlSession?(session, task: task, didSendBodyData: bytesSent, totalBytesSent: totalBytesSent, totalBytesExpectedToSend: totalBytesExpectedToSend)
         originalTaskDelegate?.urlSession?(session, task: task, didSendBodyData: bytesSent, totalBytesSent: totalBytesSent, totalBytesExpectedToSend: totalBytesExpectedToSend)
     }
     
-    // This is not implemented, since it was introduced along with macOS 12/iOS 15, and the proxy won't be used on that OS version anyways.
-    // func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics)
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        getTaskDelegate(task: task)?.delegate?.urlSession?(session, task: task, didFinishCollecting: metrics)
+        originalTaskDelegate?.urlSession?(session, task: task, didFinishCollecting: metrics)
+    }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        let taskDelegate = taskMap[task.taskIdentifier]
+        let taskDelegate = getTaskDelegate(task: task)
         
         if let error = error {
             taskDelegate?.dataStream?.finish(throwing: error)
@@ -159,7 +172,7 @@ extension SessionDelegateProxy: URLSessionDataDelegate {
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         // Note from AsyncBytes documentation: "Delegate will not be called for response and data delivery."
-        let taskDelegate = taskMap[dataTask.taskIdentifier]
+        let taskDelegate = getTaskDelegate(task:dataTask)
         
         func verifyDisposition(_ disposition: URLSession.ResponseDisposition) {
             // If we have an accumulator, we are interested in the results of the disposition!
@@ -179,20 +192,20 @@ extension SessionDelegateProxy: URLSessionDataDelegate {
     }
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didBecome downloadTask: URLSessionDownloadTask) {
-        taskMap[dataTask.taskIdentifier]?.dataDelegate?.urlSession?(session, dataTask: dataTask, didBecome: downloadTask)
+        getTaskDelegate(task:dataTask)?.dataDelegate?.urlSession?(session, dataTask: dataTask, didBecome: downloadTask)
         originalDataDelegate?.urlSession?(session, dataTask: dataTask, didBecome: downloadTask)
         // Note: The continuation in an accumulator may leak at this point, and should be verified.
     }
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didBecome streamTask: URLSessionStreamTask) {
-        taskMap[dataTask.taskIdentifier]?.dataDelegate?.urlSession?(session, dataTask: dataTask, didBecome: streamTask)
+        getTaskDelegate(task:dataTask)?.dataDelegate?.urlSession?(session, dataTask: dataTask, didBecome: streamTask)
         originalDataDelegate?.urlSession?(session, dataTask: dataTask, didBecome: streamTask)
         // Note: The continuation in an accumulator may leak at this point, and should be verified.
     }
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         // Note from AsyncBytes documentation: "Delegate will not be called for response and data delivery."
-        let taskDelegate = taskMap[dataTask.taskIdentifier]
+        let taskDelegate = getTaskDelegate(task:dataTask)
         
         data.forEach { byte in
             taskDelegate?.dataStream?.yield(byte)
@@ -203,7 +216,7 @@ extension SessionDelegateProxy: URLSessionDataDelegate {
     }
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, willCacheResponse proposedResponse: CachedURLResponse, completionHandler: @escaping (CachedURLResponse?) -> Void) {
-        if let taskDelegateMethod = taskMap[dataTask.taskIdentifier]?.dataDelegate?.urlSession(_:dataTask:willCacheResponse:completionHandler:) {
+        if let taskDelegateMethod = getTaskDelegate(task:dataTask)?.dataDelegate?.urlSession(_:dataTask:willCacheResponse:completionHandler:) {
             taskDelegateMethod(session, dataTask, proposedResponse, completionHandler)
         } else if let delegateMethod = originalDataDelegate?.urlSession(_:dataTask:willCacheResponse:completionHandler:) {
             delegateMethod(session, dataTask, proposedResponse, completionHandler)
@@ -218,9 +231,9 @@ extension SessionDelegateProxy: URLSessionDownloadDelegate {
     
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         // Note that these methods are considered to be mandatory, which might cause issues?
-        if let taskDownloadDelegate = taskMap[downloadTask.taskIdentifier]?.downloadDelegate,
+        if let taskDownloadDelegate = getTaskDelegate(task:downloadTask)?.downloadDelegate,
            taskDownloadDelegate.responds(to: #selector(urlSession(_:downloadTask:didFinishDownloadingTo:))) {
-            taskMap[downloadTask.taskIdentifier]?.downloadDelegate?.urlSession(session, downloadTask: downloadTask, didFinishDownloadingTo: location)
+            getTaskDelegate(task:downloadTask)?.downloadDelegate?.urlSession(session, downloadTask: downloadTask, didFinishDownloadingTo: location)
         }
         if let originalDownloadDelegate = originalDownloadDelegate,
            originalDownloadDelegate.responds(to: #selector(urlSession(_:downloadTask:didFinishDownloadingTo:))) {
@@ -229,12 +242,12 @@ extension SessionDelegateProxy: URLSessionDownloadDelegate {
     }
     
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        taskMap[downloadTask.taskIdentifier]?.downloadDelegate?.urlSession?(session, downloadTask: downloadTask, didWriteData: bytesWritten, totalBytesWritten: totalBytesWritten, totalBytesExpectedToWrite: totalBytesExpectedToWrite)
+        getTaskDelegate(task:downloadTask)?.downloadDelegate?.urlSession?(session, downloadTask: downloadTask, didWriteData: bytesWritten, totalBytesWritten: totalBytesWritten, totalBytesExpectedToWrite: totalBytesExpectedToWrite)
         originalDownloadDelegate?.urlSession?(session, downloadTask: downloadTask, didWriteData: bytesWritten, totalBytesWritten: totalBytesWritten, totalBytesExpectedToWrite: totalBytesExpectedToWrite)
     }
     
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didResumeAtOffset fileOffset: Int64, expectedTotalBytes: Int64) {
-        taskMap[downloadTask.taskIdentifier]?.downloadDelegate?.urlSession?(session, downloadTask: downloadTask, didResumeAtOffset: fileOffset, expectedTotalBytes: expectedTotalBytes)
+        getTaskDelegate(task:downloadTask)?.downloadDelegate?.urlSession?(session, downloadTask: downloadTask, didResumeAtOffset: fileOffset, expectedTotalBytes: expectedTotalBytes)
         originalDownloadDelegate?.urlSession?(session, downloadTask: downloadTask, didResumeAtOffset: fileOffset, expectedTotalBytes: expectedTotalBytes)
     }
 }
@@ -243,22 +256,22 @@ extension SessionDelegateProxy: URLSessionStreamDelegate {
     var originalStreamDelegate: URLSessionStreamDelegate? { originalDelegate as? URLSessionStreamDelegate }
     
     func urlSession(_ session: URLSession, readClosedFor streamTask: URLSessionStreamTask) {
-        taskMap[streamTask.taskIdentifier]?.streamDelegate?.urlSession?(session, readClosedFor: streamTask)
+        getTaskDelegate(task:streamTask)?.streamDelegate?.urlSession?(session, readClosedFor: streamTask)
         originalStreamDelegate?.urlSession?(session, readClosedFor: streamTask)
     }
     
     func urlSession(_ session: URLSession, writeClosedFor streamTask: URLSessionStreamTask) {
-        taskMap[streamTask.taskIdentifier]?.streamDelegate?.urlSession?(session, writeClosedFor: streamTask)
+        getTaskDelegate(task:streamTask)?.streamDelegate?.urlSession?(session, writeClosedFor: streamTask)
         originalStreamDelegate?.urlSession?(session, writeClosedFor: streamTask)
     }
     
     func urlSession(_ session: URLSession, betterRouteDiscoveredFor streamTask: URLSessionStreamTask) {
-        taskMap[streamTask.taskIdentifier]?.streamDelegate?.urlSession?(session, betterRouteDiscoveredFor: streamTask)
+        getTaskDelegate(task:streamTask)?.streamDelegate?.urlSession?(session, betterRouteDiscoveredFor: streamTask)
         originalStreamDelegate?.urlSession?(session, betterRouteDiscoveredFor: streamTask)
     }
     
     func urlSession(_ session: URLSession, streamTask: URLSessionStreamTask, didBecome inputStream: InputStream, outputStream: OutputStream) {
-        taskMap[streamTask.taskIdentifier]?.streamDelegate?.urlSession?(session, streamTask: streamTask, didBecome: inputStream, outputStream: outputStream)
+        getTaskDelegate(task:streamTask)?.streamDelegate?.urlSession?(session, streamTask: streamTask, didBecome: inputStream, outputStream: outputStream)
         originalStreamDelegate?.urlSession?(session, streamTask: streamTask, didBecome: inputStream, outputStream: outputStream)
     }
 }
@@ -267,12 +280,12 @@ extension SessionDelegateProxy: URLSessionWebSocketDelegate {
     var originalWebSocketDelegate: URLSessionWebSocketDelegate? { originalDelegate as? URLSessionWebSocketDelegate }
     
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        taskMap[webSocketTask.taskIdentifier]?.webSocketDelegate?.urlSession?(session, webSocketTask: webSocketTask, didOpenWithProtocol: `protocol`)
+        getTaskDelegate(task:webSocketTask)?.webSocketDelegate?.urlSession?(session, webSocketTask: webSocketTask, didOpenWithProtocol: `protocol`)
         originalWebSocketDelegate?.urlSession?(session, webSocketTask: webSocketTask, didOpenWithProtocol: `protocol`)
     }
     
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        taskMap[webSocketTask.taskIdentifier]?.webSocketDelegate?.urlSession?(session, webSocketTask: webSocketTask, didCloseWith: closeCode, reason: reason)
+        getTaskDelegate(task:webSocketTask)?.webSocketDelegate?.urlSession?(session, webSocketTask: webSocketTask, didCloseWith: closeCode, reason: reason)
         originalWebSocketDelegate?.urlSession?(session, webSocketTask: webSocketTask, didCloseWith: closeCode, reason: reason)
     }
 }
